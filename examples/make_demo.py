@@ -17,7 +17,7 @@ import io, json, os, zipfile, hashlib
 from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TPL = r"c:\AI\apple\开发\maoyan_web_template.json"
+TPL = os.path.join(HERE, "maoyan_web_template.json")
 OUT = os.path.join(HERE, "demo-template.pkpass")
 
 # 中性色，去品牌
