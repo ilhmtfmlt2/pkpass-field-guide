@@ -2,7 +2,26 @@
 
 > AnyWallet 归根结底是一件事：把一张带签名的 `.pkpass` 改写成免签名、仍能被 iOS Wallet 添加的 `.pkpass`。
 > 改写动作本身只有三步（改身份、剥签名链、重算 manifest），算法篇已经讲完。
-> 这一篇只讲**参数**——一张 `pass.json` 里每个字段填什么、怎么填、填错会怎样。结论全来自真机实测。
+> 这一篇只讲**参数**——一张 `pass.json` 里每个字段填什么、怎么填、填错会怎样。结论全来自真机实测（**iOS 27 beta 4**，40+ 次壳实验）。
+
+---
+
+## 0 iOS 27 兼容性矩阵
+
+本项目在 **iOS 27 beta 4** 真机验证通过。关键结论如下，未列维度即「与旧版一致、无回归」：
+
+| 维度 | iOS 27 beta 4 实测 | 说明 |
+|---|---|---|
+| 壳身份 `com.apple.wallet` | ✅ 放行 | 真机验证通过 |
+| `manifest` 哈希算法 | SHA-1 | 当前 `.pkpass` 规范仍是 SHA-1 清单（见第 10 节 SHA-256 风险） |
+| `signature` 文件 | 删除 | 留着反而 iOS 验签失败被拒 |
+| `webServiceURL` | 硬拒 | 免签模式下必删 |
+| `storeCard` 样式 | 拒收 | 换 `eventTicket` 或 `generic` |
+| `nfc` / `transitType` | eventTicket 不支持 | generic 样式可实验性支持 |
+| `transferURL` / `changeSeatURL` / `auxiliaryStoreIdentifiers` | 仅 poster event ticket 有效 | iOS 27 新增字段；普通 eventTicket 填了无效，非 bug |
+| 未来 iOS 28+ | ⚠️ 未验证 | 可能失效（见第 10 节） |
+
+> **iOS 27 上下文**：苹果在 iOS 27 的 Wallet 中内置了原生 Create a Pass，能把二维码直接包成 pass。它只做轻量二维码包装——不支持 eventTicket / generic 的完整字段布局、`relevantDate` 本地触发、`locations` 地理围栏，也不能批量或接 CI/CD。**这些正是 AnyWallet 的覆盖范围**，详见 README 的「iOS 27 时代」对比表。
 
 ---
 
@@ -223,6 +242,26 @@
 
 算法：对每个包内文件（不含 manifest.json 本身、不含 signature）算 `sha1_hex`，写成 `{文件名: 哈希}` 的 JSON，UTF-8 编码写回 `manifest.json`，zip 用 `ZIP_DEFLATED` 重打包。具体代码实现见 `examples/build_pass.py` 的 `rebuild()`，但那只是工具——参数对不对才是这张票能不能用的关键。
 
+### SHA-256 风险（iOS 28+ 预警）
+
+⚠️ 当前 `.pkpass` 规范的 `manifest` 是 **SHA-1** 清单，iOS 27 beta 4 实测通过。**但苹果在 iOS 17 已把 App Store 收据校验全面迁移到 SHA-256**，Wallet 的 manifest 校验未来存在同步升级到 SHA-256 的可能。
+
+若 iOS 未来版本要求 SHA-256，需同步升级 `examples/build_pass.py` 的 `rebuild()`——把 `hashlib.sha1(data)` 换成 `hashlib.sha256(data)` 即可，其余打包逻辑不变。本项目**不保证对 iOS 27 之后版本的向前兼容，需在对应版本重新真机验证**。
+
+---
+
+## 11 iOS 27 新增字段（仅 poster event ticket 生效）
+
+苹果在 iOS 27 的 Wallet 文档里扩展了 `transferURL`、`changeSeatURL`、`auxiliaryStoreIdentifiers` 等字段，但它们**只对 poster event ticket 样式生效**。普通 `eventTicket` 填了不会报错，也不会生效——用户容易以为是 bug，其实是样式限制。
+
+| 字段 | 生效条件 | 说明 |
+|---|---|---|
+| `transferURL` | poster event ticket | 转赠入口 URL |
+| `changeSeatURL` | poster event ticket | 改座入口 URL |
+| `auxiliaryStoreIdentifiers` | poster event ticket | 关联商店 ID 数组 |
+
+如果你的票是普通 `eventTicket`（本项目模板即此类），这些字段**填了无效，直接不填**。要启用需把样式换成 poster event ticket 并真机验证——这超出当前免签壳的实测范围，先标记待验证。
+
 ---
 
 ## 附：一张能用的票长什么样（最小字段集）
@@ -268,6 +307,7 @@
 
 ## 实测来源
 
+- 全部在 **iOS 27 beta 4** 真机环境验证
 - 40+ 次壳实验（不同字段组合的 pass.json 真机添加）
 - 5 个原版品牌样本逐字段比对（猫眼、万达、携程、淘票票、iTunes）
 - 12 轮 `webServiceURL` 实验（5 轮正经 HTTPS，全失败）
