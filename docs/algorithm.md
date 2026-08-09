@@ -1,212 +1,276 @@
-# 核心算法
+# 参数全解
 
-> AnyWallet 归结为**一个算法**：把一张第三方 `.pkpass` 改写成免签名、仍能被 iOS Wallet 添加的 `.pkpass`。
-> 这一篇只讲清楚它：参数、步骤、边界、与签名版的差异。
-
----
-
-## 概述
-
-**输入**：任意一张带签名的 `.pkpass`（zip）。
-
-**输出**：去掉签名链后仍能被 iOS 添加的 `.pkpass`（zip）。
-
-**代价**：没有服务器推送。`webServiceURL` 走不通，因为 APNs 证书绑在原 PTI 上，免签身份拿不到。
-
-**核心动作三步**：
-
-1. 改写身份三键（`teamIdentifier` / `passTypeIdentifier` / `serialNumber`）
-2. 剥除签名链字段（`signature` 文件 / `webServiceURL` / `authenticationToken`）
-3. 重算 `manifest.json` 的 SHA-1，重打包 zip（不写 `signature`）
+> AnyWallet 归根结底是一件事：把一张带签名的 `.pkpass` 改写成免签名、仍能被 iOS Wallet 添加的 `.pkpass`。
+> 改写动作本身只有三步（改身份、剥签名链、重算 manifest），算法篇已经讲完。
+> 这一篇只讲**参数**——一张 `pass.json` 里每个字段填什么、怎么填、填错会怎样。结论全来自真机实测。
 
 ---
 
-## 参数表
+## 1 文件结构
 
-### 身份三键
+一张 `.pkpass` 是 zip，根下必须有的文件：
 
-| 参数 | 类型 | 免签下的取值 | 说明 |
+| 文件 | 作用 | 免签下 |
+|---|---|---|
+| `pass.json` | 全部数据与样式 | 必须，改身份、剥字段 |
+| `manifest.json` | 每个文件的 SHA-1 | 必须，**每次改动后重算** |
+| `icon.png` / `icon@2x.png` | 列表缩略图标 | 必须有，否则添加报错 |
+| `logo.png` / `logo@2x.png` | 票面左上角标志 | 可选 |
+| `thumbnail.png` / `thumbnail@2x.png` | 票面右侧缩略图 | 可选 |
+| `background.png` / `strip.png` | 背景/横幅图 | **免签被丢弃，别费劲** |
+| `signature` | 开发者签名 | **不写**，写了反而要验签 |
+
+`pass.json` 顶层几个键先认一遍（名字即含义，不展开）：
+
+```json
+{
+  "formatVersion": 1,
+  "teamIdentifier": "com.apple.wallet",
+  "passTypeIdentifier": "userpass.com.apple.wallet.<uuid>",
+  "serialNumber": "t.27e66d8c385e",
+  "organizationName": "示例影城",
+  "description": "示例影城02月12日示例影片影票3张",
+  "backgroundColor": "rgb(22,42,78)",
+  "foregroundColor": "rgb(255,255,255)",
+  "labelColor": "rgb(190,205,230)",
+  "logoText": "DEMO PASS",
+  "barcode": { ... },
+  "barcodes": [ ... ],
+  "eventTicket": { ... },
+  "passThatWasSet": { ... },
+  "relevantDate": "2024-02-12T20:42:00Z",
+  "expirationDate": "2024-02-12T22:30:00Z",
+  "associatedStoreIdentifiers": [504274740]
+}
+```
+
+下面按类别逐个讲。
+
+---
+
+## 2 身份三键（免签的命门）
+
+这三键决定了 iOS 是否走验签。写错立刻被拒，没有中间态。
+
+| 键 | 免签下的固定写法 | 写错后果 |
+|---|---|---|
+| `formatVersion` | `1` | 非 1 添加报错 |
+| `teamIdentifier` | `"com.apple.wallet"` | 写成别的 Team ID → 走验签 → 因为没有合法 `signature` 直接拒 |
+| `passTypeIdentifier` | `"userpass.com.apple.wallet."` + uuid | 不以 `userpass.com.apple.wallet.` 开头 → 识别为第三方开发者身份 → 走完整签名链 → 拒 |
+| `serialNumber` | 同 PTI 下唯一即可，如 `"t.27e66..."` | 同 PTI 下重复 → Wallet 当同一张票去重，只留一张 |
+
+**两个必须每次变的量**：
+
+- `passTypeIdentifier` 末尾的 `<uuid>`：**每次生成都换**（`uuid4().hex`）。同一 PTI 下 serialNumber 不能重复，两次生成若 PTI 相同、serialNumber 不同，Wallet 列表只留一张。
+- `serialNumber`：建议带点随机性，避免和之前加过的票撞车。
+
+`formatVersion`、`teamIdentifier` 是死的，别动。
+
+---
+
+## 3 外观与标识
+
+| 键 | 取值 | 说明 |
+|---|---|---|
+| `organizationName` | 字符串 | 锁屏通知、Wallet 列表里显示的发行方名；**不是**票面大字 |
+| `description` | 字符串 | 无障碍/搜索用的描述，建议格式 `{影院}{月}月{日}日{影片}影票N张` |
+| `backgroundColor` / `foregroundColor` / `labelColor` | `rgb(r,g,b)` 或 `#RRGGBB` | 票面底色 / 主文字色 / 标签色；三者需有足够对比，否则 iOS 可能渲染异常 |
+| `logoText` | 字符串 | 左上角 logo 旁的纯文字（没有 logo 图时也能显示文字标） |
+
+颜色实测：免签渲染器对 `rgb()` 和 `#` 两种写法都认。对比度不够（如浅灰底配白字）在部分机型上字段会看不清，但这不报错，只是难看。
+
+---
+
+## 4 票面五区（eventTicket 专属）
+
+`eventTicket` 对象里分五个数组，每个元素是 `{key, label, value}`（或带 `attributedValue` / `dateStyle` 等）。位置从上到下：
+
+| 区 | 键 | 屏幕上位置 | 通常放什么 |
 |---|---|---|---|
-| `teamIdentifier` | 字符串 | `"com.apple.wallet"`（固定） | 借 Apple 系统身份。iOS 对此值跳过验签 |
-| `passTypeIdentifier` | 字符串 | `"userpass.com.apple.wallet.<uuid>"` | `<uuid>` 每次生成都换（如 `uuid4().hex`） |
-| `serialNumber` | 字符串 | 自定义 | 同 PTI 下必须唯一；建议加品牌前缀风格（如 `t.`） |
+| 主区 | `primaryFields` | 票面最大一行 | 影片名 / 活动名 |
+| 副区 | `secondaryFields` | 主区下方 | 验证码 / 时间 |
+| 辅助区 | `auxiliaryFields` | 再下方两列 | 影院、座位、场次 |
+| 背景区 | `backFields` | 点 ⓘ 才看到的背面 | 取票信息、客服电话、地址 |
+| 页眉区 | `headerFields` | 票面右上角小字 | 不常用，可省略 |
 
-### 剥除清单
+每个 field 的写法：
 
-| 字段/文件 | 类型 | 动作 | 原因 |
+```json
+{"key": "movie", "label": "影片", "value": "示例影片：星海"}
+```
+
+**value 的几种形态**：
+
+- 纯字符串：最常见。
+- 日期对象：`{"key":"show","label":"场次","value":"2024-02-12T20:42:00Z","dateStyle":"medium","timeStyle":"short"}` —— iOS 会按本机时区/格式渲染，不写 dateStyle/timeStyle 就原样显示字符串。
+- 带换行：value 里用 `\r\n` 换行（背面信息常用，如地址+电话分两行）。
+
+**长度与字体缩放（实测）**：Wallet 按内容长度自动缩小字号。同一辅助区，座位行 23 字比 7 字明显小一档。**没有字号开关**——想字大就缩短文字。原版把座位全列出来（如 `7排6座,7排7座,7排8座`）就照原样列，别替它省略，否则和原版观感对不上。
+
+**key 必须唯一且在同区不重复**，跨区可以重名（不同区互不影响）。
+
+---
+
+## 5 条码
+
+两张写法并存，缺一不可（旧版 `barcode` 单对象 + 新版 `barcodes` 数组），iOS 以 `barcodes` 为准，但留着 `barcode` 更稳：
+
+```json
+"barcode":  {"format": "PKBarcodeFormatQR", "message": "13856042", "messageEncoding": "UTF-8"},
+"barcodes": [{"format": "PKBarcodeFormatQR", "message": "13856042", "messageEncoding": "UTF-8"}]
+```
+
+| 键 | 取值 | 说明 |
+|---|---|---|
+| `format` | `PKBarcodeFormatQR` / `PKBarcodeFormatPDF417` / `PKBarcodeFormatAztec` | 二维码 / 条形码 /  Aztec |
+| `message` | 字符串 | **扫码后得到的内容**，通常是取票码 |
+| `messageEncoding` | `"UTF-8"` | 编码，实测填 UTF-8 即可 |
+| `altText` | 可选字符串 | 条码下方显示的可读文字 |
+
+**message 末位规则（实测自猫眼样本）**：取票码去分隔符后若超过 8 位，条码 message 取末 8 位。例：完整码 `1385-6042` → 去分隔符 `13856042`（正好 8 位）→ message 用 `13856042`。若原码是 `1385604288`（10 位），message 取末 8 位 `85604288`。这不是 iOS 强制，是样本本身的规律——你按自己数据源定，重点是**条码扫出来要能核销**。
+
+---
+
+## 6 本地触发（免签唯一能用的通知路径）
+
+服务器推送走不通（见算法篇），通知只能靠本地触发三件套：
+
+| 键 | 类型 | 作用 |
+|---|---|---|
+| `relevantDate` | W3C 字符串 | 到达该时刻附近，锁屏弹通知。例 `"2024-02-12T20:42:00Z"` |
+| `locations` | 坐标数组 | 进入该地理围栏时弹通知；**同时决定 Wallet 列表是否显示城市**（见下） |
+| `maxDistance` | 数字（米） | 地理围栏半径 |
+| `beacons` | 蓝牙信标数组 | 靠近指定信标时弹通知 |
+| `ignoresTimeZone` | 布尔 | `relevantDate` 是否忽略时区（默认 false，按本机时区） |
+
+`locations` 反查城市的机制（实测关键）：Wallet 列表里一张票显不显示城市，由 `locations` 坐标经 iOS 地图反查决定。
+
+- 有 `locations` → 列表显示城市名（如「北京市」）。
+- 无 `locations` → 列表只显示「活动门票」之类的中性文案。
+
+所以「要不要显示城市」不是开关字段，而是**有没有给坐标**的副产物。背面地址文字（`backFields[].value` 里的地址）走的是另一套——iOS Data Detectors 自动识别成可点链接，不影响列表城市显示，也不需坐标。
+
+---
+
+## 7 状态与生命周期
+
+| 键 | 类型 | 说明 | 免签注意 |
 |---|---|---|---|
-| `signature` | zip 文件 | 不写入 | 免签跳过验签，存在反要主动跳过 |
-| `webServiceURL` | pass.json 顶层 | 删除 | 必删。免签 + 此字段 iOS 添加阶段硬拒（与 HTTP/HTTPS 无关） |
-| `authenticationToken` | pass.json 顶层 | 删除 | 签名链一环，免签无意义 |
+| `expirationDate` | W3C 字符串 | 过期时间，到点后票自动归档（移出活跃列表） | 用 UTC，如 `"2024-02-12T22:30:00Z"` |
+| `voided` | 布尔 | 标记作废 | 默认 false |
+| `sharingProhibited` | 布尔 | 禁止长按分享 | 默认 false |
+| `passThatWasSet` | **对象**（整张 eventTicket 快照） | 见下 | **必须是对象，不能是字符串** |
+| `groupingIdentifier` | 字符串 | 把多张票归到一组显示 | **不能含空格**，否则添加报错 |
+| `appLaunchURL` | 字符串 | 点票面唤起 App 的 URL | 必须 `https://` 开头，否则报错 |
+| `associatedStoreIdentifiers` | 数字数组 | 关联 App Store 应用 ID | 填了会在票上出现「打开 App」入口；可不填 |
 
-### Manifest 重算参数
+**`passThatWasSet` 的坑（我们踩了三轮才定）**：
 
-| 参数 | 取值 | 说明 |
+这个字段让 Wallet 知道「这张票最初长什么样」，用于判断用户是否改过、以及通知去重。免签下必须填，且**必须是 eventTicket 对象的深拷贝**（即把 `eventTicket` 整个结构再写一份进来），不是时间戳字符串，也不是 `{datetime, timestamp}` 那种对象。
+
+错误写法（实测无效）：
+```json
+"passThatWasSet": "2024-02-12T20:42:00Z"          // 字符串 → 无效
+"passThatWasSet": {"date": "2024-02-12T20:42:00Z"} // 对象但结构不对 → 无效
+```
+正确写法：
+```json
+"passThatWasSet": { "primaryFields": [...], "secondaryFields": [...], "auxiliaryFields": [...], "backFields": [...] }
+```
+即与 `eventTicket` 同构的一份副本。
+
+**为什么设过去时间**：生成时把它设成「当前时刻 − 24 小时」的场次时间，能避免 Wallet 的「刚刚更新」检测把通知设置重置。设成未来或当前时刻，部分版本会清掉你刚开的通知开关。
+
+---
+
+## 8 语义 semantics
+
+`semantics` 是给 iOS 系统理解票内容的键，用于 Spotlight 搜索、钱包智能分类等。它**必须放在 `eventTicket` 内部**，不能提到 pass.json 顶层——提到顶层实测触发字段级防火墙，票直接加不进去。
+
+常用键（eventTicket 场景）：
+
+| 键 | 含义 | 取值 |
 |---|---|---|
-| 哈希算法 | SHA-1 | iOS 硬要求，不可换 |
-| 输入文件集 | `pass.json` + 所有 png/jpg | 不含 `manifest.json`、不含 `signature` |
-| 编码 | UTF-8（`pass.json`）/ 二进制（图片） | `json.dumps(..., ensure_ascii=False).encode("utf-8")` |
-| 写入方式 | `manifest.json = {filename: sha1_hex, ...}` | 完整覆盖旧 manifest |
-| zip 压缩 | `ZIP_DEFLATED` | 与原包一致 |
-| 文件顺序 | 任意 | iOS 按文件名读取 |
+| `eventStartDate` | 活动开始 | W3C 字符串 |
+| `eventEndDate` | 活动结束 | W3C 字符串 |
+| `eventName` | 活动名 | 字符串 |
+| `venueName` | 场馆名 | 字符串 |
+| `venueLocation` | 场馆坐标 | `{latitude, longitude}` |
+| `genre` | 类型 | 字符串 |
+
+`eventStartDate` / `eventEndDate` 和 `relevantDate` 是两套东西：前者喂给系统语义理解，后者管锁屏通知触发。两者都给最稳。
 
 ---
 
-## 步骤详解
+## 9 剥除清单（写了就炸）
 
-### 步骤 1：身份改写
+这些字段/文件在免签下必须没有，留着反而坏事：
 
-在 `pass.json` 顶层做三处替换：
-
-```python
-pass_json["teamIdentifier"] = "com.apple.wallet"
-pass_json["passTypeIdentifier"] = "userpass.com.apple.wallet." + uuid.uuid4().hex
-# serialNumber 保持原值或按品牌风格加前缀
-```
-
-**为什么必须是这样的值**：
-
-- `teamIdentifier == "com.apple.wallet"` 是 iOS 系统身份特例，触发"跳过验签"。
-- `passTypeIdentifier` 必须以 `userpass.com.apple.wallet.` 开头。改成别的（如 `pass.com.example.x`）会被识别为第三方开发者身份，仍要走完整签名链，立刻被拒。
-- `passTypeIdentifier` 的 `<uuid>` 部分每次生成都换——同一 PTI 下 `serialNumber` 不能重复，会被 iOS 当作"同一张票"去重。
-
-### 步骤 2：剥除签名链
-
-从 `pass.json` 顶层删键：
-
-```python
-for key in ("webServiceURL", "authenticationToken"):
-    pass_json.pop(key, None)
-```
-
-从 zip 删文件：
-
-```python
-# 步骤 4 重打包时直接不写入 signature 文件
-```
-
-**为什么三个都要剥**：
-
-- `signature`：免签身份不验签，存在反成冗余字节。
-- `webServiceURL`：壳实验 12 轮全失败（其中 5 轮用正经 HTTPS 地址）。iOS 在添加阶段就拒。
-- `authenticationToken`：是 `webServiceURL` 服务器拉取 pass 更新的鉴权凭据，二者绑死，删一个必须删另一个。
-
-### 步骤 3：（可选）字段值改写
-
-**只改 `field.value`，不新增字段、不删非签名链字段**。
-
-免签对"额外字段"容忍度不高。原版有什么就留什么，多塞一个字段可能触发 iOS 的字段级防火墙（`semantics` 塞顶层而非 `eventTicket` 嵌套下时实测触发过）。
-
-### 步骤 4：重算 Manifest
-
-```python
-import hashlib, json, zipfile
-
-manifest = {}
-data = json.dumps(pass_json, ensure_ascii=False).encode("utf-8")
-manifest["pass.json"] = hashlib.sha1(data).hexdigest()
-
-# 图片逐个算
-for fname, img_bytes in images.items():
-    manifest[fname] = hashlib.sha1(img_bytes).hexdigest()
-```
-
-### 步骤 5：重打包
-
-```python
-with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-    z.writestr("pass.json", json.dumps(pass_json, ensure_ascii=False).encode("utf-8"))
-    for fname, img_bytes in images.items():
-        z.writestr(fname, img_bytes)
-    z.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False).encode("utf-8"))
-    # 注意：不写 signature
-```
-
----
-
-## 代码实现
-
-`examples/build_pass.py` 的 `rebuild()` 是步骤 4 + 5 的最小实现：
-
-```python
-def rebuild(path):
-    tmp = path + ".tmp"
-    manifest = {}
-    with zipfile.ZipFile(path) as z:
-        names = [n for n in z.namelist() if n != "manifest.json"]
-        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as out:
-            for n in names:
-                data = z.read(n)
-                out.writestr(n, data)
-                if n != "signature":
-                    manifest[n] = hashlib.sha1(data).hexdigest()
-            out.writestr("manifest.json",
-                         json.dumps(manifest, ensure_ascii=False).encode("utf-8"))
-    os.replace(tmp, path)
-```
-
-`examples/make_demo.py` 是完整链路：读骨架 → 改身份 → 剥字段 → 改 value → 算 manifest → 打包。它还做一件事：生成后**自检 manifest 自洽**，确保包内文件 SHA-1 与 manifest 一致。
-
----
-
-## 边界条件
-
-### 改了任何字节都要重算
-
-`pass.json` 里一个字符、任何一张图，都必须重算对应文件的 SHA-1。否则 iOS 添加时直接报"凭证无效"拒收。**没有捷径**。
-
-### `passTypeIdentifier` 必须每次换 uuid
-
-同 PTI 下 `serialNumber` 不能重复。两次生成若 PTI 相同但 serialNumber 不同，Wallet 列表里只会留一张。建议每次 `uuid4().hex`。
-
-### 不需要 `signature` 文件存在
-
-原包若带 `signature`，重打包时跳过它。原包若没有，也别补——补了 iOS 反而要验签。
-
-### 图片尺寸不要硬编码
-
-同一品牌不同票，thumbnail 实测有 68×95 和 67×90 两种；icon 实测有 50×50 和 25×25 两种。换壳脚本**从模板运行时读取尺寸**，写死必错。
-
-### 字体缩放是 Wallet 自动行为
-
-字段内容越长，字号自动越小。座位行 23 字会比 7 字明显小一档。想字大就缩短文字，**没有开关**。
-
----
-
-## 通知系统：两条独立路径
-
-免签 pass 的通知只能走本地触发。两条路径机制完全不同：
-
-| 路径 | 机制 | 免签下可用 |
+| 目标 | 动作 | 原因 |
 |---|---|---|
-| 服务器推送 | `webServiceURL` + APNs 证书 + Apple 推送 | ❌（删 `webServiceURL`） |
-| 本地触发 | `relevantDate` / `locations` / `beacons` | ✅ |
-
-`passThatWasSet` 设过去时间（生成时刻 −24h）的 `eventTicket` 对象深拷贝，避免 Wallet 的"刚刚更新"检测重置通知设置。**必须是对象快照，不是时间戳字符串**——早期试过字符串与 `{datetime, timestamp}` 对象格式均无效。
-
----
-
-## 与签名版的差异
-
-| 维度 | 签名版 | 免签 |
-|---|---|---|
-| 证书 | 开发者账号申请 | 无 |
-| 验签 | Wallet 验签 | 跳过 |
-| 服务器推送 | `webServiceURL` + APNs | 不可用 |
-| 本地触发 | 可用 | 可用 |
-| `signature` 文件 | 必有 | 无 |
-| `passTypeIdentifier` | `pass.com.<brand>.<x>` | `userpass.com.apple.wallet.<uuid>` |
-| `teamIdentifier` | 开发者 Team ID | `com.apple.wallet` |
-| `webServiceURL` | 可有 | 删除 |
-| `authenticationToken` | 可有 | 删除 |
+| `signature` 文件 | 不写进 zip | 免签身份不验签，写了 iOS 反而要验 |
+| `webServiceURL` | 从 pass.json 删除 | 免签 + 此字段 → iOS 添加阶段硬拒（12 轮实验全失败，含 5 轮正经 HTTPS） |
+| `authenticationToken` | 从 pass.json 删除 | 是 webServiceURL 拉取更新的鉴权凭据，二者绑死，删一个必删另一个 |
+| `nfc` / `transitType` | 不写 | eventTicket 不支持，写了报错 |
+| `storeCard` 样式 | 换 eventTicket / generic | storeCard 免签被拒 |
+| `background.png` / `strip.png` | 不写 | 免签渲染器丢弃，写了白写 |
 
 ---
 
-## 实测结论来源
+## 10 改完必做：重算 manifest
 
-- 40+ 次壳实验（不同字段组合的 `pass.json`）
-- 5 个原版品牌样本（猫眼、万达、携程、淘票票、iTunes）逐字段比对
-- 12 轮 `webServiceURL` 实验（其中 5 轮用正经 HTTPS）
-- 多张图实测的图片尺寸样本（thumbnail 68×95、67×90；icon 50×50、25×25）
+任何对 `pass.json` 字符、任何一张图片字节的改动，都必须重算 `manifest.json` 里对应文件的 SHA-1，否则 iOS 添加时报「凭证无效」拒收。**没有捷径，改一处算一处。**
 
-样本均不在本仓库内。AnyWallet 公开的部分只有算法本身、一份字段手册、一份去品牌模板。
+算法：对每个包内文件（不含 manifest.json 本身、不含 signature）算 `sha1_hex`，写成 `{文件名: 哈希}` 的 JSON，UTF-8 编码写回 `manifest.json`，zip 用 `ZIP_DEFLATED` 重打包。具体代码实现见 `examples/build_pass.py` 的 `rebuild()`，但那只是工具——参数对不对才是这张票能不能用的关键。
+
+---
+
+## 附：一张能用的票长什么样（最小字段集）
+
+```json
+{
+  "formatVersion": 1,
+  "teamIdentifier": "com.apple.wallet",
+  "passTypeIdentifier": "userpass.com.apple.wallet.<每次换uuid>",
+  "serialNumber": "<同PTI唯一>",
+  "organizationName": "示例影城",
+  "description": "示例影城02月12日示例影片影票3张",
+  "backgroundColor": "rgb(22,42,78)",
+  "foregroundColor": "rgb(255,255,255)",
+  "labelColor": "rgb(190,205,230)",
+  "logoText": "DEMO PASS",
+  "barcode":  {"format": "PKBarcodeFormatQR", "message": "13856042", "messageEncoding": "UTF-8"},
+  "barcodes": [{"format": "PKBarcodeFormatQR", "message": "13856042", "messageEncoding": "UTF-8"}],
+  "eventTicket": {
+    "primaryFields":      [{"key":"movie","label":"影片","value":"示例影片：星海"}],
+    "secondaryFields":    [{"key":"exchangeCode","label":"验证码","value":"1385-6042"}],
+    "auxiliaryFields":    [
+      {"key":"cinemaName","label":"影院","value":"示例国际影城"},
+      {"key":"seats","label":"座位","value":"7排6座,7排7座,7排8座"},
+      {"key":"show","label":"场次","value":"2月12日 周一 20:42"}
+    ],
+    "backFields": [
+      {"key":"cinemaInfo","label":"影院信息","value":"地址：示例市示例路1号\r\n电话：1010-5335"},
+      {"key":"takeTicketInfo","label":"取票信息","value":"2月12日20:42示例国际影城..."},
+      {"key":"customerServicePhone","label":"客服电话","value":"1010-5335"}
+    ],
+    "semantics": {"eventStartDate":"2024-02-12T20:42:00Z","venueName":"示例国际影城"}
+  },
+  "passThatWasSet": { "primaryFields":[...], "secondaryFields":[...], "auxiliaryFields":[...], "backFields":[...] },
+  "relevantDate": "2024-02-12T20:42:00Z",
+  "expirationDate": "2024-02-12T22:30:00Z"
+}
+```
+
+配套图片至少要有 `icon.png` + `icon@2x.png`，否则添加报错。
+
+---
+
+## 实测来源
+
+- 40+ 次壳实验（不同字段组合的 pass.json 真机添加）
+- 5 个原版品牌样本逐字段比对（猫眼、万达、携程、淘票票、iTunes）
+- 12 轮 `webServiceURL` 实验（5 轮正经 HTTPS，全失败）
+- `passThatWasSet` 三种写法对比（字符串 / 错误对象 / eventTicket 深拷贝）
+
+样本均不在本仓库。AnyWallet 公开的部分只有算法、字段手册、一份去品牌模板。

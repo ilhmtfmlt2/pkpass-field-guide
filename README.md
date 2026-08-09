@@ -22,7 +22,7 @@ AnyWallet 借 iOS 自带的 `com.apple.wallet` 系统身份当壳——改身份
 
 代价是物理的：没有服务器推送，通知只能走本地触发。
 
-**详细参数、步骤、边界**：[`docs/algorithm.md`](docs/algorithm.md)。
+**这张票每个字段怎么填、填错会怎样，全在 [`docs/algorithm.md`](docs/algorithm.md)**——那是本项目的核心文档，不是 README 的附录。
 
 ---
 
@@ -61,7 +61,7 @@ AnyWallet 借 iOS 自带的 `com.apple.wallet` 系统身份当壳——改身份
 |---|---|
 | `examples/make_demo.py` | 生成去品牌演示票 `demo-template.pkpass` |
 | `examples/build_pass.py` | `rebuild()`：改完字段后重算 manifest |
-| `examples/maoyan_web_template.json` | 演示票骨架（电影票字段结构） |
+| `examples/pass_template.json` | 去品牌演示票骨架（eventTicket 字段结构） |
 | `examples/demo-template.pkpass` | 现成的去品牌样例 |
 | `docs/algorithm.md` | 核心算法详解（参数、步骤、边界） |
 | `docs/pitfalls.md` | 实战踩坑（每条带实验数据） |
@@ -71,17 +71,17 @@ AnyWallet 借 iOS 自带的 `com.apple.wallet` 系统身份当壳——改身份
 
 ---
 
-## 动手
+## 附赠：可跑的示例（非必需）
+
+仓库里有一份能直接生成的去品牌票，方便你对照字段手册看实际效果，但**不是项目主线**——你照着 `docs/algorithm.md` 手写一张也完全可行。
 
 ```bash
 # 生成去品牌演示票
 python examples/make_demo.py
-
-# 改完 pass.json 或图片后，重算 manifest
-python examples/build_pass.py examples/demo-template.pkpass
+# 用 AirDrop / 邮件传到 iPhone，点开加进 Wallet
 ```
 
-把 `examples/demo-template.pkpass` 用 AirDrop / 邮件传到 iPhone，点开加进 Wallet。
+`examples/` 下：`pass_template.json`（骨架）、`make_demo.py`（生成器）、`build_pass.py` 的 `rebuild()`（改完字段后重算 manifest 的小工具）、`demo-template.pkpass`（现成样例）。
 
 ---
 

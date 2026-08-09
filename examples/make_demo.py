@@ -4,7 +4,7 @@
 生成「去品牌」演示模板 demo-template.pkpass
 
 设计目标：
-- 字段结构、key/label、布局与真实电影票 eventTicket 完全一致（直接复刻猫眼原版骨架）
+- 字段结构、key/label、布局与真实电影票 eventTicket 完全一致（通用 eventTicket 骨架，不绑定任何品牌）
 - 但去掉一切品牌标识：icon/logo 用纯色占位图，颜色换成中性深蓝，内容用示例数据
 - 这样文档用它做演示时，不会牵扯任何第三方品牌的 logo / 视觉资产
 
@@ -17,7 +17,7 @@ import io, json, os, zipfile, hashlib
 from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TPL = os.path.join(HERE, "maoyan_web_template.json")
+TPL = os.path.join(HERE, "pass_template.json")
 OUT = os.path.join(HERE, "demo-template.pkpass")
 
 # 中性色，去品牌
