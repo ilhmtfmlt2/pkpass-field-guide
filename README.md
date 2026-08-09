@@ -36,9 +36,8 @@ iOS 27 起，Wallet 内置原生 Create a Pass，能把二维码直接包成 pas
 
 | 文档 | 讲什么 |
 |---|---|
-| [**docs/algorithm.md**](docs/algorithm.md) | 参数全解：身份三键、票面五区、条码、本地触发、状态、语义；iOS 27 兼容性矩阵；SHA-256 风险；新字段限制 |
+| [**docs/algorithm.md**](docs/algorithm.md) | 参数全解：身份三键、票面五区、条码、本地触发、状态、语义、图片规格；iOS 27 兼容性矩阵；SHA-256 风险；新字段限制 |
 | [**docs/pitfalls.md**](docs/pitfalls.md) | 8 条实战踩坑，每条带实验数据 |
-| [**IOS27_TEST_CHECKLIST.md**](IOS27_TEST_CHECKLIST.md) | 每次大改后必跑的真机回归清单 |
 
 ---
 
@@ -65,7 +64,6 @@ AnyWallet/
 │   ├── make_demo.py          # 演示票生成器
 │   ├── build_pass.py         # rebuild()：改完字段重算 manifest
 │   └── demo-template.pkpass  # 现成样例
-├── IOS27_TEST_CHECKLIST.md   # 真机回归清单
 ├── assets/                   # 图标、预览图、票面区域图
 └── README.md                 # 本文件（落地页）
 ```
